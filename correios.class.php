@@ -1,114 +1,137 @@
 <?php
-	include('phpQuery-onefile.php');
-	
-
 class Correios {
-	
-	static public function cep($cep){
-		/*
-			consulta realizada na versão mobile dos sites dos correios
-			pode-se buscar CEPs ou Endereços
+
+	static public function frete($dados)
+	{
+		$endpoint = 'http://ws.correios.com.br/calculador/CalcPrecoPrazo.asmx?WSDL';
+		$tipos = array(
+			'sedex'=>'40010',
+			'sedex_a_cobrar'=>'40045',
+			'sedex_10'=>'40215',
+			'sedex_hoje'=>'40290',
+			'pac'=>'41106'
+		);
+		$formatos = array(
+			'caixa'=>1,
+			'rolo'=>2,
+			'envelope'=>3,
+		);
+		
+		$dados['tipo'] = $tipos[$dados['tipo']];
+		$dados['formato'] = $formatos[$dados['formato']];
+		/* dados[tipo]
+		40010 SEDEX Varejo
+		40045 SEDEX a Cobrar Varejo
+		40215 SEDEX 10 Varejo
+		40290 SEDEX Hoje Varejo
+		41106 PAC Varejo
 		*/
-		//capituramos o HTML através da chamada cURL, enviando os parametros necessários.
-		$html = self::simple_curl('http://m.correios.com.br/movel/buscaCepConfirma.do',array(
-			'cepEntrada'=>$cep,
+		
+		/*
+		1 – Formato caixa/pacote
+		2 – Formato rolo/prisma
+		3 - Envelope
+		*/
+		$dados['cep_destino'] = eregi_replace("([^0-9])",'',$dados['cep_destino']);
+		$dados['cep_origem'] = eregi_replace("([^0-9])",'',$dados['cep_origem']);
+
+		$soap = @new SoapClient($endpoint, array(
+			'trace' => true,
+			'exceptions' => true,
+			'compression' => SOAP_COMPRESSION_ACCEPT | SOAP_COMPRESSION_GZIP,
+			'connection_timeout' => 1000
+		));
+
+		$params = array(
+			'nCdEmpresa'=>(isset($dados['empresa']) ? $dados['empresa'] : ''),
+			'sDsSenha'=>(isset($dados['senha']) ? $dados['senha'] : ''),
+			
+			'nCdServico'=>$dados['tipo'],
+			'sCepOrigem'=>$dados['cep_origem'],
+			'sCepDestino'=>$dados['cep_destino'],
+			'nVlPeso'=>$dados['peso'],
+			'nCdFormato'=>$dados['formato'],
+			'nVlComprimento'=>$dados['comprimento'],
+			'nVlAltura'=>$dados['altura'],
+			'nVlLargura'=>$dados['largura'],
+			'nVlDiametro'=>$dados['diametro'],
+			'sCdMaoPropria'=>(isset($dados['mao_propria']) && $dados['mao_propria'] ? 'S' : 'N'),
+			'nVlValorDeclarado'=>(isset($dados['valor_declarado']) ? $dados['valor_declarado'] : 0),
+			'sCdAvisoRecebimento'=>(isset($dados['aviso_recebimento']) && $dados['aviso_recebimento'] ? 'S' : 'N'),
+			'sDtCalculo'=>date('d/m/Y'),
+		);
+		//die(print_r($params,true));
+		$CalcPrecoPrazoData = $soap->CalcPrecoPrazoData($params);
+		$resultado = $CalcPrecoPrazoData->CalcPrecoPrazoDataResult->Servicos->cServico;
+		if(!is_array($resultado))
+			$resultado = array($resultado);
+		$dados = array();
+		foreach($resultado as $consulta){ $consulta = (array) $consulta;
+			$dados[$consulta['Codigo']] = array(
+				'codigo'=>$consulta['Codigo'],
+				'valor'=>(float) str_replace(',','.',$consulta['Valor']),
+				'prazo'=>(int) str_replace(',','.',$consulta['PrazoEntrega']),
+				'mao_propria'=>(float) str_replace(',','.',$consulta['ValorMaoPropria']),
+				'aviso_recebimento'=>(float) str_replace(',','.',$consulta['ValorAvisoRecebimento']),
+				'valor_declarado'=>(float) str_replace(',','.',$consulta['ValorValorDeclarado']),
+				'entrega_domiciliar'=>($consulta['EntregaDomiciliar'] === 'S' ? true : false),
+				'entrega_sabado'=>($consulta['EntregaSabado'] === 'S' ? true : false),
+				'erro'=> array('codigo'=> (real)$consulta['Erro'],'mensagem'=>$consulta['MsgErro']),
+			);
+		}
+		return $dados;
+	}
+	
+	static public function endereco($cep){
+		$cep = eregi_replace("([^0-9])",'',$cep);
+		$resultado = self::cep($cep);
+		if(count($resultado))
+			return $resultado[0];
+		else
+			return null;
+	}
+	
+	static public function cep($endereco){
+		include('phpQuery-onefile.php');
+		$html = self::simpleCurl('http://m.correios.com.br/movel/buscaCepConfirma.do',array(
+			'cepEntrada'=>$endereco,
 			'tipoCep'=>'',
 			'cepTemp'=>'',
-			'metodo'=>'buscarCep'
+			'metodo'=>'buscarCep',
 		));
-		//die($html);
-		//fazemos o phpQuery ler o HTML capiturado
 		phpQuery::newDocumentHTML($html, $charset = 'utf-8');
-
-
-		$dados = array();
-		$c = 0;
-		$t = count(pq('.caixacampobranco'));
-		foreach(pq('.caixacampobranco') as $tr){
-				$dados[$c] = 
-				array(
-					'cliente'=> trim(pq('.caixacampobranco .resposta:contains("Cliente: ") + .respostadestaque:eq(0)')->html()),
-					'endereco'=> trim(pq('.caixacampobranco .resposta:contains("Endereço: ") + .respostadestaque:eq(0)')->html()),
-					'logradouro'=> trim(pq('.caixacampobranco .resposta:contains("Logradouro: ") + .respostadestaque:eq(0)')->html()),
-					'bairro'=> trim(pq('.caixacampobranco .resposta:contains("Bairro: ") + .respostadestaque:eq(0)')->html()),
-					'cidade/uf'=> trim(pq('.caixacampobranco .resposta:contains("Localidade") + .respostadestaque:eq(0)')->html()),
-					'cep'=> trim(pq('.caixacampobranco .resposta:contains("CEP: ") + .respostadestaque:eq(0)')->html())
-				);
-
-				$dados[$c]['cidade/uf'] = explode('/',$dados[$c]['cidade/uf']);
-				$dados[$c]['cidade'] = trim($dados[$c]['cidade/uf'][0]);
-				$dados[$c]['uf'] = trim($dados[$c]['cidade/uf'][1]);
-				unset($dados[$c]['cidade/uf']);
-				if($dados[$c]['endereco']){
-					$dados[$c]['logradouro'] = $dados[$c]['endereco'];
-				}
-				unset($dados[$c]['endereco']);
-		}
-		//A pedido de Michel Isoton e Luciano Oliveira Borges agora além de busca de CEP a busca pode ser feita por endereço, 
-			//para manter compatibilidade com versões anteriores é feito a validação a baixo para transformar em array de objeto ou objeto unico.
-		if(count($dados)){
-			$cep = str_replace('-','',trim($cep));
-			if(8 === strlen($cep) && is_numeric($cep)){
-				$dados = $dados[0];
+		$pq_form = pq('');
+		//$pq_form = pq('.divopcoes,.botoes',$pq_form)->remove();
+		$pesquisa = array();
+		foreach(pq('#frmCep > div') as $pq_div){
+			if(pq($pq_div)->is('.caixacampobranco') || pq($pq_div)->is('.caixacampoazul')){
+				$dados = array();
+				$dados['cliente'] = trim(pq('.resposta:contains("Cliente: ") + .respostadestaque:eq(0)',$pq_div)->text());
+				
+				if(count(pq('.resposta:contains("Endereço: ") + .respostadestaque:eq(0)',$pq_div)))
+					$dados['logradouro'] = trim(pq('.resposta:contains("Endereço: ") + .respostadestaque:eq(0)',$pq_div)->text());
+				else
+					$dados['logradouro'] = trim(pq('.resposta:contains("Logradouro: ") + .respostadestaque:eq(0)',$pq_div)->text());
+				$dados['bairro'] = trim(pq('.resposta:contains("Bairro: ") + .respostadestaque:eq(0)',$pq_div)->text());
+				
+				$dados['cidade/uf'] = trim(pq('.resposta:contains("Localidade") + .respostadestaque:eq(0)',$pq_div)->text());
+				$dados['cep'] = trim(pq('.resposta:contains("CEP: ") + .respostadestaque:eq(0)',$pq_div)->text());
+				
+				$dados['cidade/uf'] = explode('/',$dados['cidade/uf']);
+				
+				$dados['cidade'] = trim($dados['cidade/uf'][0]);
+				
+				$dados['uf'] = trim($dados['cidade/uf'][1]);
+				unset($dados['cidade/uf']);
+				
+				$pesquisa[] = $dados;
 			}
 		}
-		
-		return $dados;
+		return $pesquisa;
 	}
-	
-	/*
-		foi substituido pela self::cep($cep);
-		para adequar a ceps que retorne o campo cliente. Ex: 12230-901;
-		Bug reportado por:
-		Leonardo Augusto Testoni Robles leoimortal@gmail.com;
-		Versão backup caso os Correios alterem o funcionamento;
-	static public function cepDesktop($cep){
-
-			//capituramos o HTML através da chamada cURL, enviando os parametros necessários.
-		$html = self::simple_curl('http://www.buscacep.correios.com.br/servicos/dnec/consultaLogradouroAction.do',array(
-			'Metodo'=>'listaLogradouro',
-			'TipoConsulta'=>'relaxation',
-			'StartRow'=>'1',
-			'EndRow'=>'10',
-			'relaxation'=>$cep
-		));
-
-		//fazemos o phpQuery ler o HTML capiturado
-		phpQuery::newDocumentHTML($html, $charset = 'utf-8');
-
-
-		$dados = array();
-		$c = 0;
-		$t = count(pq('.ctrlcontent table tr'));
-		//die(pq('.ctrlcontent table')->html());
-		foreach(pq('.ctrlcontent table tr') as $tr){
-			if($c > 1 && $c < ((int)$t - 1)){
-				//echo pq($tr)->html();
-				$dados[] = array(
-					'logradouro'=> trim(pq($tr)->find('td:eq(0)')->text()),
-					'bairro'=> trim(pq($tr)->find('td:eq(1)')->text()),
-					'cidade'=> trim(pq($tr)->find('td:eq(2)')->text()),
-					'uf'=> trim(pq($tr)->find('td:eq(3)')->text()),
-					'cep'=> trim(pq($tr)->find('td:eq(4)')->text())
-				);
-			}
-			$c += 1;
-		}
-		//die();
-		if(count($dados)){
-			//A pedido de Michel Isoton e Luciano Oliveira Borges agora aléde busca de CEP a busca pode ser feita por endereço
-			$cep = str_replace('-','',trim($cep));
-			if(8 === strlen($cep) && is_numeric($cep)){
-				$dados = $dados[0];
-			}
-		}
-		
-		return $dados;
-	}
-	*/
 	
 	static public function rastreio($codigo){
-		$html = self::simple_curl('http://websro.correios.com.br/sro_bin/txect01$.QueryList?P_LINGUA=001&P_TIPO=001&P_COD_UNI='.$codigo);
+		$html = self::simpleCurl('http://websro.correios.com.br/sro_bin/txect01$.QueryList?P_LINGUA=001&P_TIPO=001&P_COD_UNI='.$codigo);
 		phpQuery::newDocumentHTML($html, $charset = 'utf-8');
 
 		$rastreamento = array();
@@ -121,8 +144,8 @@ class Correios {
 			return false;
 		return $rastreamento;
 	}
-	
-	static public function simple_curl($url,$post=array(),$get=array()){
+
+	static private function simpleCurl($url,$post=array(),$get=array()){
 		$url = explode('?',$url,2);
 		if(count($url)===2){
 			$temp_get = array();
@@ -131,11 +154,11 @@ class Correios {
 		}
 		//die($url[0]."?".http_build_query($get));
 		$ch = curl_init($url[0]."?".http_build_query($get));
+		
 		curl_setopt ($ch, CURLOPT_POST, 1);
 		curl_setopt ($ch, CURLOPT_POSTFIELDS, http_build_query($post));
 		curl_setopt ($ch, CURLOPT_FOLLOWLOCATION, 1);
 		curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 		return curl_exec ($ch);
 	}
-	
 }
